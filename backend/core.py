@@ -2,14 +2,16 @@ from dotenv import load_dotenv
 import os
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
 import chromadb
 from groq import Groq
 
 load_dotenv()
 
-# Free local embeddings
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+embeddings = HuggingFaceInferenceAPIEmbeddings(
+    api_key=os.getenv("HF_TOKEN"),
+    model_name="sentence-transformers/all-MiniLM-L6-v2"
+)
 
 # Groq client
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
