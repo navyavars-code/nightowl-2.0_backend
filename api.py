@@ -293,7 +293,6 @@ No extra text outside JSON."""
 
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
     print("🦉 NightOwl 2.0 Python API starting...")
-    print("📡 Running on http://localhost:5000")
-    print("⚛️  React frontend: http://localhost:3000")
-    app.run(debug=True, port=5000)
+    app.run(host="0.0.0.0", port=port, debug=False)
