@@ -6,7 +6,7 @@ Matches ALL endpoints and response formats exactly so React frontend works uncha
 Run: python api.py
 Runs on: http://localhost:5000
 """
-
+import traceback
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -288,8 +288,8 @@ No extra text outside JSON."""
         })
         return jsonify({"notes": notes})
     except Exception as e:
+        traceback.print_exc()  # prints full error to Render logs
         return jsonify({"error": str(e)}), 500
-
 
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
