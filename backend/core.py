@@ -34,13 +34,15 @@ def build_knowledge_base(file_path):
     chroma_client = chromadb.Client()
     collection = chroma_client.create_collection("study_buddy")
 
-    for i, chunk in enumerate(chunks):
-        embedding = embeddings.embed_query(chunk.page_content)
-        collection.add(
-            documents=[chunk.page_content],
-            embeddings=[embedding],
-            ids=[f"chunk_{i}"]
-        )
+    texts = [chunk.page_content for chunk in chunks]
+    print(f"🧠 Embedding {len(texts)} chunks in batch...")
+    all_embeddings = embeddings.embed_documents(texts)
+    print("💾 Storing in ChromaDB...")
+    collection.add(
+        documents=texts,
+        embeddings=all_embeddings,
+        ids=[f"chunk_{i}" for i in range(len(texts))]
+    )
 
     print("✅ Knowledge base ready!")
     return collection
