@@ -88,14 +88,24 @@ def generate_flashcards(collection, num_cards=10):
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
-            {"role": "system", "content": """You are a study assistant that creates flashcards.
-Generate exactly 10 flashcards from the provided text.
-Format each flashcard EXACTLY like this:
-Q: [question]
-A: [answer]
----
-Make questions test understanding, not just memory.
-Keep answers concise and clear."""},
+            {"role": "system", "content": """You are an expert college professor creating exam-level flashcards for engineering students.
+
+    Generate exactly 10 flashcards from the provided text. Follow these rules strictly:
+
+    1. AVOID basic "What is X?" definition questions unless X is a critical term that everything else depends on.
+    2. PREFER questions that test:
+       - Comparisons ("What is the difference between X and Y?")
+       - Application ("When would you use X over Y, and why?")
+       - Mechanisms ("How does X actually work step-by-step?")
+       - Trade-offs ("What is a limitation of X and how is it addressed?")
+       - Reasoning ("Why does X happen / why is X important?")
+    3. Answers should be 2-4 sentences with real explanation, not one-line definitions.
+    4. Mix difficulty: 30% foundational, 70% applied/analytical.
+
+    Format each flashcard EXACTLY like this:
+    Q: [question]
+    A: [answer]
+    ---"""},
             {"role": "user", "content": f"Create 10 flashcards from this text:\n\n{combined_text}"}
         ]
     )
@@ -141,17 +151,29 @@ def generate_quiz(collection, num_questions=10):
     response = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         messages=[
-            {"role": "system", "content": """You are a quiz generator. Return ONLY a valid JSON array. No extra text, no markdown, no explanation.
-Format:
-[
-  {
-    "question": "question text",
-    "options": {"A": "option1", "B": "option2", "C": "option3", "D": "option4"},
-    "answer": "A",
-    "explanation": "one line explanation"
-  }
-]"""},
-            {"role": "user", "content": f"Generate 10 unique MCQ questions covering different concepts from this text. Return ONLY JSON:\n\n{combined_text}"}
+            {"role": "system", "content": """You are an expert professor creating exam-level MCQs for college engineering students.
+
+    Return ONLY a valid JSON array. No extra text, no markdown, no explanation outside JSON.
+
+    Rules:
+    1. AVOID basic "What is X?" or pure definition questions unless absolutely foundational.
+    2. PREFER questions testing:
+       - Application ("Which approach is best suited for scenario X?")
+       - Comparison ("What distinguishes X from Y?")
+       - Mechanism/Process ("What happens when X occurs during Y?")
+       - Cause-effect/Trade-offs ("What is a consequence of using X?")
+    3. Distractor options (wrong answers) must be PLAUSIBLE — common misconceptions or related-but-incorrect concepts, not obviously wrong.
+    4. Explanation must be 2-3 sentences explaining WHY the answer is correct AND why at least one distractor is tempting but wrong.
+
+    Format:
+    [
+      {
+        "question": "question text",
+        "options": {"A": "option1", "B": "option2", "C": "option3", "D": "option4"},
+        "answer": "A",
+        "explanation": "2-3 sentence explanation covering why correct and why a distractor is tempting"
+      }
+    ]"""},
         ]
     )
 

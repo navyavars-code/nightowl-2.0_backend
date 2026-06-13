@@ -10,7 +10,7 @@ import traceback
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os, base64, tempfile, json, sys
+import os, base64, tempfile, json, sys,threading
 
 load_dotenv()
 sys.path.append(os.path.dirname(__file__))
@@ -31,6 +31,8 @@ groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 # In-memory store: session_id → ChromaDB collection
 knowledge_bases: dict = {}
+# Track processing status per session
+processing_status: dict = {}
 
 
 # ── Helper: call Groq and parse JSON safely ─────────────────
@@ -64,7 +66,17 @@ def health():
         "groqConfigured": bool(os.getenv("GROQ_API_KEY")),
         "timestamp": __import__("datetime").datetime.utcnow().isoformat()
     })
-
+def process_pdf_background(tmp_path, session_id):
+    try:
+        processing_status[session_id] = "processing"
+        collection = build_knowledge_base(tmp_path)
+        knowledge_bases[session_id] = collection
+        processing_status[session_id] = "done"
+    except Exception as e:
+        processing_status[session_id] = f"error: {str(e)}"
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 # ══════════════════════════════════════════════════════════════
 # 2. PARSE DOCUMENT  (replaces Gemini inline PDF parsing)
@@ -73,50 +85,57 @@ def health():
 # ══════════════════════════════════════════════════════════════
 @app.route("/parse-document", methods=["POST"])
 def parse_document():
-    data      = request.json or {}
+    data = request.json or {}
     file_name = data.get("fileName", "Untitled")
-    file_data = data.get("fileData")       # base64 string
+    file_data = data.get("fileData")
     text_cont = data.get("textContent")
 
     if not file_data and not text_cont:
         return jsonify({"error": "Missing document data"}), 400
 
+    session_id = file_name.replace(" ", "_")
+
     try:
         if file_data:
-            # Decode base64 PDF → temp file → PyPDFLoader
             raw_bytes = base64.b64decode(file_data)
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 tmp.write(raw_bytes)
                 tmp_path = tmp.name
 
+            # Quick preview text using PyPDFLoader (fast, just first few pages)
             from langchain_community.document_loaders import PyPDFLoader
-            pages   = PyPDFLoader(tmp_path).load()
-            parsed  = "\n\n".join(p.page_content for p in pages)
-            os.unlink(tmp_path)
+            pages = PyPDFLoader(tmp_path).load()
+            preview = "\n\n".join(p.page_content for p in pages[:3])
 
-            # Also build knowledge base for RAG (stored by filename key)
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp2:
-                tmp2.write(raw_bytes)
-                tmp2_path = tmp2.name
-            session_id = file_name.replace(" ", "_")
-            knowledge_bases[session_id] = build_knowledge_base(tmp2_path)
-            os.unlink(tmp2_path)
+            # Start heavy processing in background
+            thread = threading.Thread(target=process_pdf_background, args=(tmp_path, session_id))
+            thread.start()
+
+            return jsonify({
+                "title": file_name,
+                "parsedContent": preview,
+                "charCount": len(preview),
+                "wordCount": len(preview.split()),
+                "sessionId": session_id,
+                "processing": True
+            })
         else:
-            parsed = text_cont
-
-        return jsonify({
-            "title":         file_name,
-            "parsedContent": parsed,
-            "charCount":     len(parsed),
-            "wordCount":     len(parsed.split()),
-            "sessionId":     file_name.replace(" ", "_")   # bonus: send back for RAG
-        })
+            return jsonify({
+                "title": file_name,
+                "parsedContent": text_cont,
+                "charCount": len(text_cont),
+                "wordCount": len(text_cont.split()),
+                "sessionId": session_id,
+                "processing": False
+            })
     except Exception as e:
-        import traceback
-        error_details = traceback.format_exc()
-        app.logger.error(f"PARSE ERROR: {error_details}")
-        print(f"PARSE ERROR: {error_details}", flush=True)
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/status/<session_id>", methods=["GET"])
+def check_status(session_id):
+    status = processing_status.get(session_id, "unknown")
+    return jsonify({"status": status})
 
 
 # ══════════════════════════════════════════════════════════════
@@ -124,13 +143,15 @@ def parse_document():
 #    Receives: { messages: [{role, content}], documentContext }
 #    Returns:  { role: "assistant", content }
 # ══════════════════════════════════════════════════════════════
+
 @app.route("/chat", methods=["POST"])
 def chat():
     data     = request.json or {}
     messages = data.get("messages", [])
     context  = data.get("documentContext", "")
     session  = data.get("sessionId", "")
-
+    if session and processing_status.get(session) == "processing":
+        return jsonify({"error": "Still processing your document, please wait a moment..."}), 202
     if not messages:
         return jsonify({"error": "Messages array is required"}), 400
 
@@ -176,13 +197,15 @@ def chat():
 #    Receives: { contextText, topicDescription, count }
 #    Returns:  { flashcards: [{question, answer, category}] }
 # ══════════════════════════════════════════════════════════════
+
 @app.route("/generate-flashcards", methods=["POST"])
 def generate_flashcards():
     data    = request.json or {}
     context = data.get("contextText", data.get("topicDescription", ""))
     count   = data.get("count", 10)
     session = data.get("sessionId", "")
-
+    if session and processing_status.get(session) == "processing":
+        return jsonify({"error": "Still processing your document, please wait a moment..."}), 202
     try:
         # Use RAG collection if available
         if session and session in knowledge_bases:
@@ -193,9 +216,14 @@ def generate_flashcards():
             return jsonify({"flashcards": cards})
 
         # Fallback: use contextText directly
-        system = """You are a flashcard generator. Return ONLY a valid JSON array.
-Each item: {"question": "...", "answer": "...", "category": "..."}
-Make questions test understanding. Keep answers concise. No extra text."""
+        system = """You are an expert professor creating exam-level flashcards for college students.
+        Return ONLY a valid JSON array. Each item: {"question": "...", "answer": "...", "category": "..."}
+
+        Rules:
+        - AVOID basic "What is X?" questions unless X is foundational.
+        - PREFER questions on comparisons, mechanisms, trade-offs, applications, and reasoning ("why"/"how").
+        - Answers must be 2-4 sentences with real explanation, not one-liners.
+        - No extra text outside the JSON array."""
         user = f"Generate {count} flashcards from:\n\n{context[:4000]}"
         cards = groq_json(system, user, [])
         if not isinstance(cards, list):
@@ -216,7 +244,8 @@ def generate_quiz():
     context = data.get("contextText", data.get("topicDescription", ""))
     count   = data.get("count", 5)
     session = data.get("sessionId", "")
-
+    if session and processing_status.get(session) == "processing":
+        return jsonify({"error": "Still processing your document, please wait a moment..."}), 202
     try:
         if session and session in knowledge_bases:
             qs = gen_quiz_core(knowledge_bases[session], num_questions=count)
@@ -235,15 +264,21 @@ def generate_quiz():
             return jsonify({"quizzes": quizzes})
 
         # Fallback: contextText directly
-        system = """You are a quiz generator. Return ONLY a valid JSON array.
-Each item must have EXACTLY:
-{
-  "question": "...",
-  "options": ["option1","option2","option3","option4"],
-  "correctAnswerIdx": 0,
-  "explanation": "..."
-}
-correctAnswerIdx is 0-3. No extra text, no markdown."""
+        system = """You are an expert professor creating exam-level MCQs for college engineering students.
+        Return ONLY a valid JSON array. Each item must have EXACTLY:
+        {
+          "question": "...",
+          "options": ["option1","option2","option3","option4"],
+          "correctAnswerIdx": 0,
+          "explanation": "..."
+        }
+
+        Rules:
+        - AVOID basic "What is X?" questions unless foundational.
+        - PREFER application, comparison, mechanism, and trade-off questions.
+        - Distractor options must be plausible (common misconceptions), not obviously wrong.
+        - explanation: 2-3 sentences covering why the answer is correct and why a distractor is tempting.
+        - correctAnswerIdx is 0-3. No extra text, no markdown."""
         user = f"Generate {count} MCQ questions from:\n\n{context[:4000]}"
         quizzes = groq_json(system, user, [])
         if not isinstance(quizzes, list):
@@ -263,7 +298,8 @@ def generate_notes():
     data    = request.json or {}
     context = data.get("contextText", data.get("topicDescription", ""))
     session = data.get("sessionId", "")
-
+    if session and processing_status.get(session) == "processing":
+        return jsonify({"error": "Still processing your document, please wait a moment..."}), 202
     try:
         if session and session in knowledge_bases:
             raw_notes = gen_notes_core(knowledge_bases[session])
@@ -275,22 +311,31 @@ def generate_notes():
                 "content":      raw_notes
             }})
 
-        system = """You are a note generator. Return ONLY a valid JSON object:
-{
-  "title": "...",
-  "summary": "2-3 sentence executive summary",
-  "keyTakeaways": ["point1", "point2", "point3", "point4", "point5"],
-  "content": "full markdown notes here"
-}
-No extra text outside JSON."""
-        user = f"Create study notes from:\n\n{context[:4000]}"
-        notes = groq_json(system, user, {
+        # Generate markdown notes directly (more reliable than forcing JSON for long content)
+        resp = groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system",
+                 "content": "You are a study notes generator. Summarize the given content into concise, well-organized markdown notes with headers, bullet points, and key concepts. Do NOT just repeat the original text — actively summarize and explain."},
+                {"role": "user", "content": f"Create summarized study notes from this content:\n\n{context[:4000]}"}
+            ]
+        )
+        content_md = resp.choices[0].message.content
+
+        # Generate a short title + summary + takeaways from the same content
+        meta_system = """Return ONLY valid JSON: {"title": "...", "summary": "2-3 sentence summary", "keyTakeaways": ["point1","point2","point3","point4","point5"]}"""
+        meta = groq_json(meta_system, f"Based on this content, generate title/summary/takeaways:\n\n{context[:2000]}", {
             "title": "Study Notes",
-            "summary": "Notes generated from your document.",
-            "keyTakeaways": [],
-            "content": context[:1000]
+            "summary": "AI-generated summary of your document.",
+            "keyTakeaways": []
         })
-        return jsonify({"notes": notes})
+
+        return jsonify({"notes": {
+            "title": meta.get("title", "Study Notes"),
+            "summary": meta.get("summary", ""),
+            "keyTakeaways": meta.get("keyTakeaways", []),
+            "content": content_md
+        }})
     except Exception as e:
         traceback.print_exc()  # prints full error to Render logs
         return jsonify({"error": str(e)}), 500
