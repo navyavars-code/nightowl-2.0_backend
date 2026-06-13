@@ -6,13 +6,17 @@ import chromadb
 from groq import Groq
 
 load_dotenv()
+from fastembed import TextEmbedding
 
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
-embeddings = HuggingFaceInferenceAPIEmbeddings(
-    api_key=os.getenv("HF_TOKEN"),
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+_fastembed_model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
 
+class FastEmbedWrapper:
+    def embed_query(self, text):
+        return list(_fastembed_model.embed([text]))[0].tolist()
+    def embed_documents(self, texts):
+        return [e.tolist() for e in _fastembed_model.embed(texts)]
+
+embeddings = FastEmbedWrapper()
 # Groq client
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
