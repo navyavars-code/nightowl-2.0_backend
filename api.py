@@ -112,6 +112,10 @@ def parse_document():
             "sessionId":     file_name.replace(" ", "_")   # bonus: send back for RAG
         })
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        app.logger.error(f"PARSE ERROR: {error_details}")
+        print(f"PARSE ERROR: {error_details}", flush=True)
         return jsonify({"error": str(e)}), 500
 
 
